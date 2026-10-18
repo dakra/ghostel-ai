@@ -56,10 +56,17 @@ Nil reads the TYPESAFE_API_KEY environment variable."
   "Seconds to wait for the classifier before sending the input as-is."
   :type 'number)
 
-(defcustom ghostel-ai-passthrough-commands
-  '("cd" "ls" "pwd" "cat" "less" "echo" "clear" "exit")
-  "First words that skip classification and go straight to the shell."
-  :type '(repeat string))
+(defcustom ghostel-ai-routes
+  '(("\\`\\s-*#" . translate)
+    ("\\`\\s-*\\(?:cd\\|ls\\|pwd\\|cat\\|less\\|echo\\|clear\\|exit\\)\\b[^\n]*\\'" . shell))
+  "Where line-mode input goes before the classifier sees it.
+Each element is (REGEXP . ROUTE); the first REGEXP matching the input
+wins and unmatched input is classified.  ROUTE `shell' sends the input
+as typed, `translate' sends the input minus the matched text to gptel,
+`classify' asks Jev."
+  :type '(alist :key-type regexp
+                :value-type (choice (const shell) (const translate)
+                                    (const classify))))
 
 (defcustom ghostel-ai-shell-threshold 0.5
   "Below this probability of being a shell command, input is translated."
@@ -164,6 +171,21 @@ Unlike `url-retrieve-synchronously', closes the connection on timeout."
       (error "Timeout"))
     buf))
 
+(defun ghostel-ai--route (input)
+  "Return (ROUTE . REST) for INPUT from `ghostel-ai-routes', or nil.
+REST is INPUT without the matched text, trimmed.  Matching is case-sensitive."
+  (let ((case-fold-search nil))
+    (seq-some (lambda (route)
+                (when (string-match (car route) input)
+                  (cons (cdr route) (string-trim (replace-match "" t t input)))))
+              ghostel-ai-routes)))
+
+(defun ghostel-ai--cancel ()
+  "Drop the pending translation so its reply is ignored."
+  (when ghostel-ai--pending
+    (setq ghostel-ai--pending nil)
+    (let ((inhibit-message t)) (gptel-abort (current-buffer)))))
+
 (defun ghostel-ai--classify (input)
   "Ask Jev about INPUT; return an alist with `is-shell' and `dangerous'.
 Both values are probabilities.  Return nil when the request fails."
@@ -247,8 +269,7 @@ On failure INPUT stays in the input region."
                                     (eq (buffer-local-value 'ghostel-ai--pending buf)
                                         token))
                            (with-current-buffer buf
-                             (setq ghostel-ai--pending nil)
-                             (let ((inhibit-message t)) (gptel-abort buf))
+                             (ghostel-ai--cancel)
                              (message "ghostel-ai: translation timed out"))))))
       (error
        (setq ghostel-ai--pending nil)
@@ -282,24 +303,40 @@ leave the input in place."
   "Classify INPUT before `ghostel-line-mode-send' ships it.
 Return non-nil to keep the input in the buffer instead of sending it."
   (cond
+   (current-prefix-arg (ghostel-ai--cancel) nil)
    (ghostel-ai--pending
-    (message "ghostel-ai: still translating, toggle `ghostel-ai-mode' to reset")
+    (message "ghostel-ai: still translating, C-u RET sends as typed")
     t)
    ((or (string-blank-p input)
-        (ghostel-command-running-p)
-        (member (car (split-string input)) ghostel-ai-passthrough-commands))
+        (ghostel-command-running-p))
     nil)
    (t
-    (let ((answers (ghostel-ai--classify input)))
-      (cond
-       ;; PTY output during the classifier wait may have torn line mode down.
-       ((not (eq ghostel--input-mode 'line)) t)
-       ((null answers) nil)
-       ((< (alist-get 'is-shell answers) ghostel-ai-shell-threshold)
-        (ghostel-ai--translate input)
-        t)
-       ((> (alist-get 'dangerous answers) ghostel-ai-danger-threshold)
-        (not (y-or-n-p "Looks destructive.  Run anyway? "))))))))
+    (pcase (ghostel-ai--route input)
+      (`(shell . ,_) nil)
+      (`(translate . ,rest)
+       (unless (string-empty-p rest)
+         (ghostel-ai--translate rest)
+         t))
+      (_
+       (let ((answers (ghostel-ai--classify input)))
+         (cond
+          ;; PTY output during the classifier wait may have torn line mode down.
+          ((not (eq ghostel--input-mode 'line)) t)
+          ((null answers) nil)
+          ((< (alist-get 'is-shell answers) ghostel-ai-shell-threshold)
+           (ghostel-ai--translate input)
+           t)
+          ((> (alist-get 'dangerous answers) ghostel-ai-danger-threshold)
+           (not (y-or-n-p "Looks destructive.  Run anyway? "))))))))))
+
+;;;###autoload
+(defun ghostel-ai-send-to-shell ()
+  "Send the line-mode input as typed, skipping classifier and translation."
+  (interactive)
+  (unless (eq ghostel--input-mode 'line)
+    (user-error "Not in line mode"))
+  (ghostel-ai--cancel)
+  (ghostel-line-mode-send-input (ghostel--line-mode-input-text)))
 
 ;;;; Completion
 
@@ -416,6 +453,7 @@ a cancelled wait still fills the cache when the reply arrives."
               (input (buffer-substring-no-properties (car bounds) (cdr bounds)))
               ((not (string-blank-p input)))
               ((not (string-search "\n" input)))
+              ((not (eq (car (ghostel-ai--route input)) 'translate)))
               (suffix (with-demoted-errors "ghostel-ai: %S"
                         (ghostel-ai--llm-suffix input (car bounds))))
               ((not (string-empty-p suffix)))

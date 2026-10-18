@@ -11,7 +11,8 @@ Natural-language commands and AI completions for
   command or an instruction in natural language.  Instructions are
   turned into a command by [gptel](https://github.com/karthink/gptel)
   and put back into the input for review; press `RET` again to run
-  it, or edit it and ask again.
+  it, or edit it and ask again.  Input starting with `#` skips the
+  classifier and is translated right away.
 - **Confirm.** Input that Jev rates as destructive asks `y-or-n`
   before it is sent.
 - **Complete.** While typing, `completion-preview-mode` shows a
@@ -41,7 +42,7 @@ Natural-language commands and AI completions for
 
 |Option                                                       |Default                             |Meaning                                                   |
 |-------------------------------------------------------------|------------------------------------|----------------------------------------------------------|
-|`ghostel-ai-passthrough-commands`                            |`cd ls pwd cat less echo clear exit`|First words that skip classification                      |
+|`ghostel-ai-routes`                                          |`#` translates, `cd ls ...` go to shell|Regexps that skip the classifier                       |
 |`ghostel-ai-shell-threshold`                                 |0.5                                 |Below this shell probability the input is translated      |
 |`ghostel-ai-danger-threshold`                                |0.5                                 |Above this destructive probability a confirmation is asked|
 |`ghostel-ai-typesafe-timeout`                                |2                                   |Seconds to wait for the classifier before sending as-is   |
@@ -56,6 +57,18 @@ The prompts are `format-spec` templates: `%s` is the shell name
 (`zsh`, `fish`, `nu`, ...), `%o` the operating system and `%d` the
 working directory.
 
+`ghostel-ai-routes` is an alist of `(REGEXP . ROUTE)`, first match
+wins, unmatched input goes to the classifier.  `shell` sends the input
+as typed, `translate` sends the input minus the matched text to gptel,
+`classify` asks Jev.  `(("" . shell))` turns the classifier off.
+
+To send a line as typed, skipping routes and classifier, press
+`C-u RET` or bind `ghostel-ai-send-to-shell`:
+
+```emacs-lisp
+(keymap-set ghostel-line-mode-map "C-<return>" #'ghostel-ai-send-to-shell)
+```
+
 ## Caveats
 
 - The input, working directory, directory listing, recent terminal
@@ -63,11 +76,11 @@ working directory.
   TypeSafe, everything to the gptel backend.
 - Emacs blocks while a completion is pending.  Typing cancels the wait
   immediately; the reply is still cached for the next pause.
-- Commands in `ghostel-ai-passthrough-commands` skip the destructive
-  check too, so `git push --force` is not caught by default.
+- Input routed to `shell`, `C-u RET` and `ghostel-ai-send-to-shell`
+  skip the destructive check too.
 - When the classifier is unreachable the input is sent unchanged.  Once
-  it is classified as natural language it is never sent as typed: a
-  model failure keeps it in the input region.
+  it is classified as natural language it is never sent as typed by
+  `RET`: a model failure keeps it in the input region.
 
 ## Development
 

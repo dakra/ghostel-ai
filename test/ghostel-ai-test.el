@@ -32,6 +32,30 @@
      (goto-char 18)
      (should-not (ghostel-ai--history-capf)))))
 
+(ert-deftest ghostel-ai-route ()
+  (should (equal (ghostel-ai--route "#  list big files")
+                 '(translate . "list big files")))
+  (should (equal (ghostel-ai--route " ls -la") '(shell . "")))
+  (should-not (ghostel-ai--route "ls\nrm -rf /"))
+  (should-not (ghostel-ai--route "Echo the current path"))
+  (should-not (ghostel-ai--route "lsof"))
+  (should-not (ghostel-ai--route "git status")))
+
+(ert-deftest ghostel-ai-line-mode-send-routes ()
+  (ghostel-ai-test--with-input
+   (lambda ()
+     (let (translated)
+       (cl-letf (((symbol-function 'ghostel-ai--translate)
+                  (lambda (input) (setq translated input)))
+                 ((symbol-function 'ghostel-ai--classify)
+                  (lambda (_) (ert-fail "classified a routed line"))))
+         (should (ghostel-ai--line-mode-send "# list big files"))
+         (should (equal translated "list big files"))
+         (should-not (ghostel-ai--line-mode-send "#"))
+         (should-not (ghostel-ai--line-mode-send "ls -la"))
+         (let ((current-prefix-arg '(4)))
+           (should-not (ghostel-ai--line-mode-send "list big files"))))))))
+
 (ert-deftest ghostel-ai-prompt ()
   (ghostel-ai-test--with-input
    (lambda ()
@@ -59,11 +83,12 @@
            ghostel-ai--pending t)
      (should-not (ghostel-ai--llm-capf))
      (setq ghostel-ai--pending nil)
-     (delete-region 16 22)
-     (insert "  ")
      (cl-letf (((symbol-function 'ghostel-ai--llm-suffix)
-                (lambda (&rest _) (ert-fail "asked the model for blank input"))))
-       (should-not (ghostel-ai--llm-capf))))))
+                (lambda (&rest _) (ert-fail "asked the model"))))
+       (dolist (input '("  " "# list"))
+         (delete-region 16 (point-max))
+         (insert input)
+         (should-not (ghostel-ai--llm-capf)))))))
 
 (ert-deftest ghostel-ai-llm-capf-stale-bounds ()
   (ghostel-ai-test--with-input
